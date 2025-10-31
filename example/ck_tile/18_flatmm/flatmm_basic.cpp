@@ -47,7 +47,7 @@ static constexpr inline auto is_row_major(Layout layout_)
 
 // mfma_type, 0:32x32, 1:16x16
 template <typename FlatmmConfig, typename T>
-auto shuffle_b(const ck_tile::HostTensor<T>& t)
+auto flat_shuffle_b(const ck_tile::HostTensor<T>& t)
 {
     assert(t.get_lengths().size() == 2);
     int n_ = t.get_lengths()[1];
@@ -66,7 +66,7 @@ auto shuffle_b(const ck_tile::HostTensor<T>& t)
 }
 
 template <typename FlatmmConfig, typename T>
-auto shuffle_b_v1(const ck_tile::HostTensor<T>& t)
+auto flat_shuffle_b_v1(const ck_tile::HostTensor<T>& t)
 {
     assert(t.get_lengths().size() == 2);
     int n_ = t.get_lengths()[1];
