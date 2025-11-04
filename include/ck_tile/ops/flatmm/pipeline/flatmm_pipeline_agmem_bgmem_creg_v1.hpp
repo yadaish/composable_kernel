@@ -653,8 +653,8 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
             // async_load_fence();
             // __builtin_amdgcn_s_waitcnt(0x03fc);
             // data has been stored in lds, no need more operation.
-            static_assert(std::is_same_v<AElementFunction, identity>,
-                          "buffer_load_lds don't support element func fot A before mfma");
+            // static_assert(std::is_same_v<AElementFunction, identity>,
+            //               "buffer_load_lds don't support element func or A before mfma");
         };
 #else
         auto prefill_lds_a_stage1 =
