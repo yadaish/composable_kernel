@@ -7,6 +7,8 @@
 #include "ck_tile/host/concat.hpp"
 #include "ck_tile/ops/flatmm/pipeline/flatmm_pipeline_agmem_bgmem_creg_v1_policy.hpp"
 
+#define CKTILE_FLATMM_USE_BUFFER_LOAD_LDS 1
+
 namespace ck_tile {
 
 template <typename Problem>
