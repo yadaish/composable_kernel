@@ -196,6 +196,11 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
     CK_TILE_HOST_DEVICE static constexpr auto
     SchedulerPerM(index_t dsread_perM, index_t dswrite_perM, index_t load_perM)
     {
+#if CKTILE_FLATMM_USE_BUFFER_LOAD_LDS
+        // GFX950 use BUFFER_LOAD_LDS to fill lds_buffer_A.
+        // There is no separate DS_WRITE instruction at all.
+        dswrite_perM = 0;
+#endif
         // Init inst order
         index_t max_data_inst   = dsread_perM > load_perM
                                       ? (dsread_perM > dswrite_perM ? dsread_perM : dswrite_perM)
@@ -626,9 +631,47 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
             NIterPerWarp>
             b_warp_tensor_pong;
 
+
+        using ABlockTile = decltype(load_tile(a_copy_dram_window));
+        ABlockTile a_block_tile;
+        enum
+        {
+            PrefillBeforeGemm = 1,
+            PrefillAfterGemm  = 2,
+            PrefillAlways     = PrefillBeforeGemm | PrefillAfterGemm,
+        };
+#if CKTILE_FLATMM_USE_BUFFER_LOAD_LDS
+        auto prefill_lds_a_stage1 =
+            [&]([[maybe_unused]] auto lds_tile_a, auto dram_tile_a, auto prefill_location) {
+                // global -> lds
+                if constexpr(prefill_location & PrefillAfterGemm)
+                    async_load_tile(lds_tile_a, dram_tile_a);
+            };
+        auto prefill_lds_a_stage2 = [&](auto lds_tile_a) {
+            // async_load_fence();
+            // __builtin_amdgcn_s_waitcnt(0x03fc);
+            // data has been stored in lds, no need more operation.
+            static_assert(std::is_same_v<AElementFunction, identity>,
+                          "buffer_load_lds don't support element func fot A before mfma");
+        };
+#else
+        auto prefill_lds_a_stage1 =
+            [&]([[maybe_unused]] auto lds_tile_a, auto dram_tile_a, auto prefill_location) {
+                // global -> vgpr
+                if constexpr(prefill_location & PrefillBeforeGemm)
+                    a_block_tile = load_tile(dram_tile_a);
+            };
+        auto prefill_lds_a_stage2 = [&]([[maybe_unused]] auto lds_tile_a) {
+            // vgpr -> lds
+            auto a_block_tile_transformed = tile_elementwise_in(a_element_func, a_block_tile);
+            store_tile(lds_tile_a, a_block_tile_transformed);
+        };
+#endif
+
         // HEAD
         // Prefetch A0
-        auto a_block_tile = load_tile(a_copy_dram_window);
+        prefill_lds_a_stage1(a_copy_lds_window_ping, a_copy_dram_window, number<PrefillAlways>{});
+
         // move A window to next k
         move_tile_window(a_copy_dram_window, {0, kKPerBlock});
 
@@ -646,18 +689,17 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
         // move B window to next flat K
         move_tile_window(b_flat_dram_window, {0, BlockGemmShape::flatKPerBlock});
 
-        auto a_block_tile_tmp = tile_elementwise_in(a_element_func, a_block_tile);
-        store_tile(a_copy_lds_window_ping, a_block_tile_tmp);
+        prefill_lds_a_stage2(a_copy_lds_window_ping);
         __builtin_amdgcn_sched_barrier(0);
 
         // Prefetch A1
-        a_block_tile = load_tile(a_copy_dram_window);
+        prefill_lds_a_stage1(a_copy_lds_window_pong, a_copy_dram_window, number<PrefillAlways>{});
         // move A window to next k
         move_tile_window(a_copy_dram_window, {0, kKPerBlock});
 
         // initialize C
         tile_elementwise_inout([](auto& c) { c = 0; }, c_block_tile);
-
+        __builtin_amdgcn_s_waitcnt(0); // Needs to be tuned or fixed w
         block_sync_lds();
 
         // preload A00,A10... from lds
@@ -690,14 +732,11 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
             });
 
             // Prefill A(2i+1)
-            a_block_tile_tmp = tile_elementwise_in(a_element_func, a_block_tile);
-            store_tile(a_copy_lds_window_pong, a_block_tile_tmp);
+           prefill_lds_a_stage2(a_copy_lds_window_pong);
 
             // Prefetch A(2i+2)
-            a_block_tile = load_tile(a_copy_dram_window);
-            // move A window to next k
-            move_tile_window(a_copy_dram_window, {0, kKPerBlock});
-
+            prefill_lds_a_stage1(
+                a_copy_lds_window_ping, a_copy_dram_window, number<PrefillBeforeGemm>{});
             // GEMM 2i
             static_for<0, KIterPerWarp, 1>{}([&](auto kIter) {
                 static_for<0, MIterPerWarp, 1>{}([&](auto mIter) {
@@ -734,10 +773,16 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                     // barrier
                     if constexpr((kIter == KIterPerWarp - 1) && (mIter == MIter_2nd_last))
                     {
+                        __builtin_amdgcn_s_waitcnt(0); // Needs to be tuned or fixed
                         block_sync_lds();
                     }
                 });
             });
+            prefill_lds_a_stage1(
+                a_copy_lds_window_ping, a_copy_dram_window, number<PrefillAfterGemm>{});
+
+            // move A window to next k
+            move_tile_window(a_copy_dram_window, {0, kKPerBlock});
 
             // move B window to next flat K
             move_tile_window(b_flat_dram_window, {0, BlockGemmShape::flatKPerBlock});
@@ -748,7 +793,7 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                 a_warp_tensor(loadIter) =
                     load_tile(a_warp_windows_pong(number<mIter>{})(number<kIter>{}));
             });
-            HotLoopScheduler();
+            // HotLoopScheduler();
 
             // Next K
 
@@ -765,13 +810,11 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
             });
 
             // Prefill A(2i+2)
-            a_block_tile_tmp = tile_elementwise_in(a_element_func, a_block_tile);
-            store_tile(a_copy_lds_window_ping, a_block_tile_tmp);
+            prefill_lds_a_stage2(a_copy_lds_window_ping);
 
             // Prefetch A(2i+3)
-            a_block_tile = load_tile(a_copy_dram_window);
-            // move A window to next k
-            move_tile_window(a_copy_dram_window, {0, kKPerBlock});
+            prefill_lds_a_stage1(
+                a_copy_lds_window_pong, a_copy_dram_window, number<PrefillBeforeGemm>{});
 
             // GEMM 2i+1
             static_for<0, KIterPerWarp, 1>{}([&](auto kIter) {
@@ -812,7 +855,11 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                     }
                 });
             });
+            prefill_lds_a_stage1(
+                a_copy_lds_window_pong, a_copy_dram_window, number<PrefillAfterGemm>{});
 
+            // move A window to next k
+            move_tile_window(a_copy_dram_window, {0, kKPerBlock});
             // move B window to next flat K
             move_tile_window(b_flat_dram_window, {0, BlockGemmShape::flatKPerBlock});
 
@@ -822,7 +869,7 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                 a_warp_tensor(loadIter) =
                     load_tile(a_warp_windows_ping(number<mIter>{})(number<kIter>{}));
             });
-            HotLoopScheduler();
+            // HotLoopScheduler();
 
             iCounter--;
         }
@@ -843,8 +890,7 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
             });
 
             // Prefill A(loopK)
-            a_block_tile_tmp = tile_elementwise_in(a_element_func, a_block_tile);
-            store_tile(a_copy_lds_window_pong, a_block_tile_tmp);
+            prefill_lds_a_stage2(a_copy_lds_window_pong);
 
             // GEMM loopK-1
             static_for<0, KIterPerWarp, 1>{}([&](auto kIter) {
@@ -882,6 +928,7 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                     // barrier
                     if constexpr((kIter == KIterPerWarp - 1) && (mIter == MIter_2nd_last))
                     {
+                        __builtin_amdgcn_s_waitcnt(0); // needs to be tuned.
                         block_sync_lds();
                     }
                 });
@@ -894,6 +941,7 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                     load_tile(a_warp_windows_pong(number<mIter>{})(number<kIter>{}));
             });
 
+            __builtin_amdgcn_sched_barrier(0);
             Last2ndHotLoopScheduler();
 
             // GEMM loopK

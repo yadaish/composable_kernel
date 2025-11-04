@@ -471,19 +471,6 @@ int run_flatmm_example(int argc, char* argv[])
                 }
             }
         }
-        else if(data_type == "bf8")
-        {
-            if(scale_opt == 0)
-            {
-                run_flatmm_example_with_layouts<ck_tile::bf8_t, FlatmmConfig<ck_tile::bf8_t>>(
-                    argc, argv, Row{}, Col{}, Row{});
-            }
-            else
-            {
-                run_flatmm_example_with_layouts<ck_tile::bf8_t, FlatmmConfig<ck_tile::bf8_t>, 1, 1>(
-                    argc, argv, Row{}, Col{}, Row{});
-            }
-        }
         else
         {
             throw std::runtime_error("Unsupported data_type!");
