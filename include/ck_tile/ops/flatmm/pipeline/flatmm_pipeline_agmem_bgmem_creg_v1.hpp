@@ -648,6 +648,7 @@ defined(USING_MFMA_32x32x64) && defined(ENABLE_FP4) // mi350 fp4 32c 1*K1
                 // global -> lds
                 if constexpr(prefill_location & PrefillAfterGemm)
                     async_load_tile(lds_tile_a, dram_tile_a);
+                __builtin_amdgcn_s_waitcnt(0);
             };
         auto prefill_lds_a_stage2 = [&](auto lds_tile_a) {
             // async_load_fence();
