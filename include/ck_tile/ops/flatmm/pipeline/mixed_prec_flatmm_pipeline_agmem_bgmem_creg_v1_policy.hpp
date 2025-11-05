@@ -83,9 +83,7 @@ struct F16xMXF4FlatmmPipelineAgBgCrPolicy : UniversalFlatmmPipelineAgBgCrPolicy
             make_tuple(sequence<0, 1>{}, sequence<2, 3, 4>{}),
             make_tuple(sequence<0>{}, sequence<1>{}));
 #else
-        auto t = a_dram_view;
-        print(t);
-        return t;
+        return a_dram_view;
 #endif
     }
 
