@@ -856,7 +856,6 @@ struct FlatmmKernel
                 a_ptr, b_flat_ptr, ds_ptr, e_ptr, kargs, splitk_batch_offset);
         const auto& gemm_pad_views = MakeGemmPadViews(gemm_tensor_views_tuple);
         auto gemm_tile_windows     = MakeGemmTileWindows(gemm_pad_views, block_idx_m, block_idx_n);
-        print(gemm_tile_windows)
 
         const index_t num_loop = TilePartitioner::GetLoopNum(splitk_batch_offset.splitted_k);
 
